@@ -1,0 +1,5 @@
+how to program"
+
+Tx->TX
+Rx->Rx (internally flipped),
+flip switch towards connector

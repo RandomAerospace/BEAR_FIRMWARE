@@ -155,7 +155,7 @@ void setup_dra818() {
 
   pinMode(PIN_RAD_PW, OUTPUT);
   wake_dra818();
-  tune_dra818("144.390");
+  tune_dra818("144.3900");
 
   //Turn on module
   pinMode(PIN_RAD_PW, OUTPUT);
@@ -180,89 +180,87 @@ void setup_dra818() {
 
 
 //reuse this code for state machine
+// Single transmit chain: one APRS packet, then - when the SSTV schedule
+// says so - the frequency change + tune and one SSTV frame immediately
+// after, then cooldown. Merging SSTV into this machine makes the
+// APRS->SSTV pairing structural, so the old cross-machine flags
+// (sstv_awaiting_aprs, sstv_transmit) and the separate SSTV state
+// machine are gone.
 void RTTY_TX() {
   unsigned long currentTime = millis();
-  static bool transmissionStarted = false;
 
-  //TX safeties//
+  //TX safeties// NOT TURNED ON FOR BEAR14
+  // These now inherently protect SSTV too: a frame can only ever start
+  // from inside RTTY_TRANSMITTING, which these guards keep us out of.
+  /*
   if (cutterOn == true) {
-    rttyState = RTTY_IDLE;  //returns RTTY state machine to idle to allow sensors to update between cuts or heaters, if not sensors will not be read
-    transmissionStarted = false;
+    rttyState = RTTY_IDLE;  //park in idle so sensors keep updating between cuts
     return;  //disables any transmission
   }
   if (heaterOn == true) {
     rttyState = RTTY_IDLE;
-    //returns RTTY state machine to idle to allow sensors to update between cuts or heaters,  if not sensors will not be read
-    transmissionStarted = false;
     return;  //disables any transmission
   }
-
+  */
 
   //Timed events start here
   switch (rttyState) {
-
     case RTTY_IDLE:
-      //enable_VTX();//ENABLE VTX DURING THIS TIM
-      transmissionStarted = false;  // Reset flag when back in IDLE OR START
       if (currentTime - rttyStateStartTime >= RTTY_IDLE_TIME) {
-        //disable_VTX(); //DISABLE VTX BEFORE MOVINGTO TRANSMITTING STATE
         rttyState = RTTY_START;
         rttyStateStartTime = currentTime;
-       
       }
       break;
 
     case RTTY_START:
-      
-       
       Serial.println(F("[RTTY] Starting transmission process..."));
       if (currentTime - rttyStateStartTime >= RTTY_START_TIME) {
-        
         rttyState = RTTY_TRANSMITTING;
         rttyStateStartTime = currentTime;
         Serial.println(F("[RTTY] Beginning transmission..."));
       }
       break;
 
-    case RTTY_TRANSMITTING:
+    case RTTY_TRANSMITTING: {
+      // One pass, all blocking. Entering this state sends exactly one
+      // APRS packet (APRSLite keys and releases PTT itself), then at
+      // most one SSTV frame, then falls straight through to cooldown.
+      // There is no re-entry window, so no repeated transmissions.
+      /*
+      if (fixType == 0) use_gps = false;        // No Fix
+      else if (fixType == 1) use_gps = false;   // Dead reckoning
+      else if (fixType == 2) use_gps = true;    // 2D
+      else if (fixType == 3) use_gps = true;    // 3D
+      else if (fixType == 4) use_gps = true;    // GNSS + Dead reckoning
+      else if (fixType == 5) use_gps = false;   // Time only
+      */
+      
+     
+      send_report(use_gps);
+      delay(1000);
 
-      if (!transmissionStarted) {  // transmissionStarted=True
-        int tx_mode = 0;
-       
-        //send report
-        if (tx_mode == 0) {
-          /*
-          if (fixType == 0) use_gps = false;        // No Fix
-          else if (fixType == 1) use_gps = false;   // Dead reckoning
-          else if (fixType == 2) use_gps = true;    // 2D
-          else if (fixType == 3) use_gps = true;    // 3D
-          else if (fixType == 4) use_gps = true;    // GNSS + Dead reckoning
-          else if (fixType == 5) use_gps = false;   // Time only
-          */
-          bool use_gps=true;
-
-          send_report(use_gps);
-          transmissionStarted = true;
-        }
-        
+      // SSTV piggyback: frequency change and tune right after APRS.
+      // sstv_transmit_frame() blocks for the whole frame (~36 s) and
+      // returns with the radio back on 144.3900, PTT released.
+      if (sstv_due(millis())) {
+        build_sstv_image();
+        sstv_transmit_frame();
       }
-      task_cam_switch(); // <--- TRIGGER THE CAMERA SWITCH HERE
-      //this will bring the the transmitter out of the transmission loop
-      if (currentTime - rttyStateStartTime >= RTTY_TRANSMIT_TIME) {
-        rttyState = RTTY_COOLDOWN;
-        rttyStateStartTime = currentTime;
 
-        frame_counter++; // Increment the counter
-        
+      frame_counter++; // Increment the counter
 
-        Serial.print(F("[SYSTEM] Transmission finished. Switched to Camera "));
-        Serial.println((frame_counter % 2) + 1);
-        Serial.println(F("[RTTY] Transmission complete, entering cooldown..."));
-      }
+      Serial.print(F("[SYSTEM] Transmission finished. Switched to Camera "));
+      Serial.println((frame_counter % 2) + 1);
+      Serial.println(F("[RTTY] Transmission complete, entering cooldown..."));
+
+      rttyState = RTTY_COOLDOWN;
+      // Fresh timestamp - the blocking calls above can take ~40 s, so
+      // currentTime (captured at entry) is long stale by now.
+      rttyStateStartTime = millis();
       break;
+    }
 
     case RTTY_COOLDOWN:
-      //put stuff here
       if (currentTime - rttyStateStartTime >= RTTY_COOLDOWN_TIME) {
         rttyState = RTTY_IDLE;
         rttyStateStartTime = currentTime;
@@ -271,5 +269,3 @@ void RTTY_TX() {
       break;
   }
 }
-
-

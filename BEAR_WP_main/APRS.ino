@@ -112,8 +112,8 @@ void send_report(bool use_gps) {
       // E: External (Type K)
       // P: Pressure in hPa
       sz += sprintf((char*)&(packet[sz]), 
-                    "T:%+05.1f E:%+05.1f P:%04u ", 
-                    ambient_temp, external_temp, baro_press);
+                    "T:%+05.1f B:%+05.1f P:%04u ", 
+                    ambient_temp, BatTemp, baro_press);
       break;
 
     case 1:

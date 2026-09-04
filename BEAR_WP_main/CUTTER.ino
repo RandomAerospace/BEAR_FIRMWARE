@@ -26,7 +26,7 @@ void Cutter(){
     else{
       cut_count=0;
     }
-    digitalWrite(PIN_CUTTER, LOW);
+    //digitalWrite(PIN_CUTTER, LOW);
     Serial.print("CutterOn state: ");
     Serial.println(cutterOn);
   }
@@ -40,10 +40,10 @@ void Cutter(){
     if (cutter_last_time == 0) {  // Only set timer once when cutting starts
       cutter_last_time = curr_time;
     }
-    digitalWrite(PIN_CUTTER,HIGH);
+    //digitalWrite(PIN_CUTTER,HIGH);
 
     if (curr_time-cutter_last_time>=CUT_DURATION){
-      digitalWrite(PIN_CUTTER,LOW);
+      //digitalWrite(PIN_CUTTER,LOW);
       cutterOn=false;
       cutter_state=false;
       cut_count=0;//reset count
@@ -54,10 +54,10 @@ void Cutter(){
   }
 }
 
-
+//FOR BEAR 14 I WANT TO TEST CUTTER LOGIC
 void Cutter_setup(){
-  pinMode(PIN_CUTTER,OUTPUT);
-  digitalWrite(PIN_CUTTER,LOW);
+  //pinMode(PIN_CUTTER,OUTPUT);
+  //digitalWrite(PIN_CUTTER,LOW);
   cutterOn=false;
   Serial.print("Cutter Setup");
 }

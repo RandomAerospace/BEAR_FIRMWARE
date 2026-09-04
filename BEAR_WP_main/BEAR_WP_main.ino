@@ -1,14 +1,38 @@
+// These headers define types used in function signatures elsewhere in the
+// sketch (twai_message_t in CAN_BUS.ino's handle_can_frame(); JPEGDRAW in
+// this file's drawMCUs()). Arduino auto-generates forward prototypes for
+// every function in the sketch and inserts them near the top of this
+// file - before this point - so each type has to already be visible
+// here, even though the "real" #include for it sits further down (in
+// CAN_BUS.ino, or later in this same file). Leaving the originals in
+// place too is fine - header guards make the repeat harmless.
+#include <string.h>
+#include "JPEGDEC.h"
+
 //TO DO:
 //APRS PARAMETERS
 String callsign = "9V1WP";
 String callsign_suffix = "-11";
 uint8_t callsign_ssid = 11;
-String comment_suffix = "FPV@1.28GHz";
-String boot_message = "BEAR13 Project";
+String comment_suffix = "SSTV 145.670";
+String boot_message = "BEAR14 Project";
 
 //APRS
 uint16_t msg_id = 0;
 bool freefall=false;
+
+//RBF - Set this to false before flight (for testing)
+bool use_gps = true;
+
+// RBF - Set this to false before flight
+bool sstv_run_now = true;
+
+// RBF - Set this to true before flight
+bool inhibit_sstv = false;
+//check SSTV.INO Line 221
+
+// RBF - Set this to false before flight
+bool fast_sstv = false;
 
 
 //CUTTER CONFIG
@@ -21,7 +45,15 @@ const unsigned long CUT_DURATION = 15000;    //cut duration in ms
 const unsigned long sensor_interval = 2000;  // read sensors every 100ms
 const unsigned long setup_interval = 2000;
 const unsigned long GNSS_interval = 1000;  //poll GNSS every 1 second
-const unsigned long Bat_temp_interval = 800;
+
+
+//SSTV variables
+uint8_t SSTV_mod_m = 5;   
+uint16_t SSTV_inhibit_height_m = 0;
+uint32_t SSTV_inhibit_time_ms = 0L;
+//uint32_t SSTV_inhibit_time_ms = 1200000L; // 20 minutes
+
+
 
 // Enum to represent the states of our RTTY transmission
 enum RTTYState {
@@ -36,15 +68,25 @@ RTTYState rttyState = RTTY_IDLE;
 unsigned long rttyStateStartTime = 0;
 const unsigned long RTTY_IDLE_TIME = 30000;      // 20 seconds between transmissions
 const unsigned long RTTY_START_TIME = 1000;      // 250 ms idle signal
-const unsigned long RTTY_TRANSMIT_TIME = 6000;  // give 6000 to tiemeout transmission
 const unsigned long RTTY_COOLDOWN_TIME = 250;    // 250 second cooldown
 
 
+
+
 // Global variables for UART BRIDGE
-float BV = 0.0f;
-float Current = 0;
-bool heaterOn = false;
-float BatTemp = 0;
+
+volatile bool newTelemetryReady = false;
+volatile float BV = 0.0;
+volatile float Current = 0.0;
+volatile float BatTemp = 0.0;
+volatile uint8_t heaterOn = 0;
+
+
+// Received from HEAD over the I2C link (see HEAD_LINK.ino) 
+
+
+// Camera
+bool imready = false;
 
 //RADIO PINS
 
@@ -118,7 +160,7 @@ uint16_t gheading = 0;
 
 //RTC stuff [RBF]
 uint16_t tyear=2026;
-uint8_t tmonth=3;
+uint8_t tmonth=8;
 uint8_t tday=28;
 uint16_t thour = 6;
 uint16_t tminute = 6;
@@ -127,20 +169,18 @@ uint16_t tms = 6;
 unsigned long long tsync = 0;
 
 
-//CAM SWITCH PWM SETTINGS
+//CAM SWITCH PWM SETTINGS(not used in BEAR14)
 // Hardware PWM Settings
-const int ledcChannel = 0; //APRS
-const int ledcChannel2= 2; //vtx switcher 
-const int ledcFreq = 50;      // 50Hz (20ms period)
-const int ledcRes = 13;       // 13-bit resolution (0-8191)
+//const int ledcChannel = 0; //APRS
+//const int ledcChannel2= 2; //vtx switcher 
+//const int ledcFreq = 50;      // 50Hz (20ms period)
+//const int ledcRes = 13;       // 13-bit resolution (0-8191)
 
 
-
-//RTTY PACKET FORMAT AND VARIABLE DECLARATIONS
+// PACKET FORMAT AND VARIABLE DECLARATIONS
 uint8_t frame_counter = 0;
 float ambient_temp = 0.0f; //barometer temp
 float external_temp=0.0f; //type K temp
-float bat_temp=0.0f; //battery temperature from UART bridge
 uint16_t baro_press = 0;
 
 
@@ -160,24 +200,26 @@ uint16_t baro_press = 0;
 #define I2C_SDA 21
 #define I2C_SCL 22
 
-//UART pins (header pins) remmeber to pin matrix
-//purpose is to serve as UART bridge with arduino
+
 //THIS IS THE SDA/SCL ON THE 1X06 JST HEADER
+//HEAD LINK (I2C slave here - see i2c_HEAD.ino; HEAD is master, writing
+//on its own Wire bus).
 #define I2C2_SDA 32 //I2C SDA
 #define I2C2_SCL 33 //I2C SCL
 
-//Mavlink
-#define UART2_TX 16
-#define UART2_RX 17
+//CAN BUS PIN MAPPING (TWAI controller -> external transceiver, e.g. SN65HVD230)
+//TODO(E): not wired anywhere else in this project - confirm against actual
+//transceiver wiring. 26/34 are just the free, non-strapping pins available here.
+#define CAN_TX 4
+#define CAN_RX 5
+
+
+//camera
+#define PIN_CAM_TX 16
+#define PIN_CAM_RX 17
 
 //Camera Switch pins
-#define PIN_CAM_SWITCH 26
-
-//VTX_EN PIN
-#define PIN_VTX_EN 4
-
-//CUTTER EN PIN
-#define PIN_CUTTER 5
+//#define PIN_CAM_SWITCH 26
 
 //DRA818V PIN MAPPING
 #define PIN_RAD_PTT 2
@@ -194,7 +236,7 @@ uint16_t baro_press = 0;
 #include <Wire.h>
 #include <Adafruit_I2CDevice.h>
 #include <Adafruit_I2CRegister.h>
-
+#include <CAN.h>
 
 
 //temperature sensr
@@ -203,21 +245,9 @@ uint16_t baro_press = 0;
 //Adafruit_MAX31855 maxthermo = Adafruit_MAX31855(VSPI_SS, VSPI_MOSI, VSPI_MISO, VSPI_SCK);
 Adafruit_MAX31855 thermocouple( VSPI_SCK, VSPI_SS, VSPI_MISO);
 
-//CURRENT SENSE
-#include <Adafruit_INA228.h>
-// Create the second I2C instance (using hardware I2C peripheral 1)
-TwoWire I2C2_Bus = TwoWire(1);
-
-#define INA228_ADDR          0x45
-Adafruit_INA228 ina228 = Adafruit_INA228();
-
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include "secrets.h"
-
-//mavlink
-#include <MAVLink.h>
-HardwareSerial MavSerial(2);
 
 //APRS
 #include <APRSLite.h>
@@ -258,141 +288,71 @@ SoftwareSerial radioCtrl(PIN_RAD_RX, PIN_RAD_TX);
 
 UDPStream udpstream;
 
+//////////////////////////////////////////////////////
+//// SSTV
+//////////////////////////////////////////////////////
+#include "Adafruit_GFX.h"
 
-void setup() {
-  unsigned long currentMillis = millis();
-  static unsigned long previousMillis = 0;
-  // Bug fix, pullup DTR so we can boot properly if we reset
-  pinMode(PIN_DTR, INPUT_PULLUP);
+#include "Adafruit_GFX.h"
 
+#include "BEAR_images.h"
+#define WIDTH       BEAR_IMAGE_WIDTH
+#define HEIGHT      BEAR_IMAGE_HEIGHT
+#define COMPONENTS  BEAR_IMAGE_COMPONENTS
 
+// The outer pointer is not const-qualified (only the pointee is), so
+// SSTV.ino can reassign these to cycle through BEAR_IMAGES[] each time
+// it falls back to a baked-in frame.
+const uint8_t (*im_ref)[WIDTH][COMPONENTS] = BEAR_IMAGES[0].ref;
+const uint8_t (*im_cm)[4] = BEAR_IMAGES[0].cm;
+uint8_t bear_image_index = 1;  // next index to use (0 was assigned above)
 
-  Serial.begin(115200);
-  setup_mavlink();
-  Serial.println("Serial 1 started at 9600 baud rate");
-  
-  delay(10);
-  Serial.print("Show SPI pins");
-  Serial.print("MOSI: ");
-  Serial.println(MOSI);
-  Serial.print("MISO: ");
-  Serial.println(MISO);
-  Serial.print("SCK: ");
-  Serial.println(SCK);
-  Serial.print("SS: ");
-  Serial.println(SS);
-  delay(10);
-  // Small delay to avoid reset during SPI initialization
+#define HALFWIDTH   (WIDTH/2)
+#define HALFHEIGHT  (HEIGHT/2)
 
-
-  //initialise i2c
-  Serial.print("Initialising I2c");
-  Wire.begin(I2C_SDA,I2C_SCL);
-  Wire.setClock(100000);  // Set to 10 kHz to clock stretch the MCP9600
-  // Start I2C2 at 100kHz
-  I2C2_Bus.begin(I2C2_SDA, I2C2_SCL);
-  I2C2_Bus.setClock(100000);
+uint8_t (*im_buf)[WIDTH][COMPONENTS] = 0;
+GFXcanvas8 *im;
 
 
-  //initialise i2c for asm330lhhtr
+//////////////////////////////////////////////////////
+//// Camera
+//////////////////////////////////////////////////////
+#include <Adafruit_VC0706.h>
+#include "JPEGDEC.h"
 
-  // Set I2C_disable = 0 in CTRL4_C (0x13) (optional, as it is 0 by default)
-  /*
-  Wire.beginTransmission(ASM330_ADDR);
-  Wire.write(0x13);
-  Wire.write(0x00); //Clear I2C_disable
-  
-  // Set DEVICE_CONF = 1 in CTRL9_XL (0x18)
-  Wire.beginTransmission(ASM330_ADDR);
-  Wire.write(0x18);
-  Wire.write(0x01); //Clear I2C_disable
-  
-  Serial.println("Configuration complete.");
-  */
-  
-  Assistnow_setup(); 
-  GNSS_setup();
-  // Will transmit boot message, ensure dra818 is ready
-  //setup DRA818 first before APRS.
-  Serial.println("DRA818");
-  setup_dra818();
-  Serial.println("APRS");
-  setup_aprs();
-  //setup_temp();
-  
-  setup_cam_switch();
-  baro_setup();
+ 
+Adafruit_VC0706 cam = Adafruit_VC0706(&Serial1);
+JPEGDEC jpeg;
 
-  setup_currentsense();
-  Cutter_setup();
-  Serial.print("All setup");
+#define MAX_ALLOWED_JPG_SIZE (32000)
+uint8_t jpg_img[MAX_ALLOWED_JPG_SIZE];
+uint16_t jpg_sz = 0;
 
-  
+int drawMCUs(JPEGDRAW *pDraw) {
+  if (!im_buf) return 0;
+
+  int x = pDraw->x;
+  int y = pDraw->y;
+  int w = pDraw->iWidth;
+  int h = pDraw->iHeight;
+
+  for (int16_t i = 0; i < w; i++) {
+    for (int16_t j = 0; j < h; j++) {
+      uint16_t pval = pDraw->pPixels[i + j * w];
+      im_buf[y + j][x + i][0] = idx_nearest_colour((pval & 0xF800) >> 8, (pval & 0x07E0) >> 3, (pval & 0x001F) << 3);;
+    }
+  }
+  return 1;
 }
 
-void loop() {
+//////////////////////////////////////////////////////
+/// i2c bus to head
+//////////////////////////////////////////////////////
 
-  //task_heater();
+// Dedicated bus to HEAD - separate from Wire (TAIL's own baro/GPS), see
+// I2C2_SDA/I2C2_SCL above and HEAD_LINK.ino.
+TwoWire I2C2_Bus = TwoWire(1);
 
-  Cutter();
 
 
-  //checks the battery temp every 5s, changes state every 5s, also checks if RTTY is going to be transmitted.
-  //this is why it is placed at the front of the loop because i don't want GPIO to be high before RTTY Tx.
-  //also the heater eats too much current with the energizer lithiums, it will cause the esp32 to bootloop
 
-  //only during IDLE and cutterOn FALSE will sensors update
-  if (rttyState == RTTY_IDLE && cutterOn == false) {
-    updateSensors();
-  }
-
-  // Update OSD every 500ms for smooth display
-  static unsigned long lastMavUpdate = 0;
-  if (millis() - lastMavUpdate >= 2000) {
-    task_mavlink_osd();
-    lastMavUpdate = millis();
-  }
-
-  RTTY_TX();
-}
-
-//THIS FUNCTION UPDATES SENSORS ACCORDING TO RTTY_STATE
-void updateSensors() {
-  unsigned long currentMillis = millis();
-  static unsigned long previousMillis = 0;
-  static unsigned long previousGNSSMillis = 0;
-  static unsigned long previousBATTEMPMillis = 0;
-  
-  // Break out early if we're not in RTTY_IDLE state
-  if (rttyState != RTTY_IDLE) {
-    return;
-  }
-  if (currentMillis - previousGNSSMillis >= GNSS_interval) {  //this happens every 1000ms
-    read_gnss();
-    
-    previousGNSSMillis = currentMillis;
-  }
-
-  if (currentMillis - previousMillis >= sensor_interval) {  //this happens every 250ms
-    read_baro();
-    task_temp();
-    read_currentsense();
-    
-
-    previousMillis = currentMillis;
-  }
-  /*
-  // Add debugging
-  static unsigned long last_debug_time = 0;
-  if (currentMillis - last_debug_time >= 5000) {  // Print every 5 seconds
-    Serial.print(F("[DEBUG] RTTY State: "));
-    Serial.print(rttyState);
-    
-    Serial.print(F(" Heater Pin: "));
-    Serial.print(digitalRead(PIN_HEATER));
-    Serial.print(F(" Temp: "));
-    Serial.println(ambient_temp);
-    last_debug_time = currentMillis;
-  }
-  */
-}
